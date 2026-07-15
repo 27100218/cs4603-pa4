@@ -226,6 +226,32 @@ supervisor answer below.
   "app_status": {"message": "App has status: App is running", "state": "RUNNING"}
   ```
 
+**Bonus A (GitHub Actions CI/CD, `.github/workflows/deploy.yml`):**
+- Forked the repo to `github.com/27100218/cs4603-pa4` (needed push access and repo Settings to add
+  secrets, which the upstream instructor repo doesn't grant) and added `DATABRICKS_HOST`,
+  `DATABRICKS_TOKEN`, `DATABRICKS_MODEL`, `VECTOR_SEARCH_ENDPOINT`, `VECTOR_SEARCH_INDEX` as
+  repository secrets.
+- **Bug found and fixed:** `uv sync` in the `lint-and-test` job didn't install `ruff` (it lives
+  under `[project.optional-dependencies] dev` in `pyproject.toml`, an optional extra, not a
+  default dependency), so `Run ruff` failed with `Failed to spawn: 'ruff' — No such file or
+  directory`. Fixed by changing that step to `uv sync --extra dev`.
+- **Feature-branch test (`ci-test` branch):** confirmed the main-only gate — `lint-and-test` ran
+  and passed, `deploy` showed as skipped since the branch isn't `main`.
+- **`main` push test:** confirmed the full pipeline runs end to end. `lint-and-test` passed, then
+  `deploy` actually ran and executed `deployment/deploy.py` against the live workspace using the
+  injected secrets:
+  ```
+  Registered model 'cs4603.default.yahya_document_analyst' already exists. Creating a new version...
+  Created version '20' of model 'cs4603.default.yahya_document_analyst'.
+  Registered: cs4603.default.yahya_document_analyst version 20
+  Updated endpoint 'yahya-document-analyst'
+  Model version: 20
+  Deployment to yahya-document-analyst complete.
+  ```
+  This is a real CI-triggered deployment: pushing to `main` registered UC model version 20 and
+  updated the live `yahya-document-analyst` endpoint automatically, with no manual `deploy.py`
+  invocation.
+
 ## Design decisions
 
 - **Model type:** `mlflow.pyfunc.ChatModel` instead of `mlflow.langchain`, so Databricks Model
