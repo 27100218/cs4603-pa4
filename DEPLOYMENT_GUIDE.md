@@ -1,6 +1,6 @@
 # PA4 - Document Analyst Deployment
 
-You already deployed a LangGraph agent in **`wk5_langgraph/15.databricks_deployment/`**.
+You already deployed a LangGraph agent in **`databricks_deployment_v1/`**.
 PA4's deployment is the **same pipeline** — you are not learning a new method. This
 guide starts from what you already did and points out the handful of things that are
 *different* because your PA4 agent is bigger and modular.
@@ -12,13 +12,13 @@ guide starts from what you already did and points out the handful of things that
 > or want to automate the deploy steps below.
 
 > **PA4 deploys the same graph two ways.**
-> - **Part 2 (from wk5/15) — the manual path.** You call `log_model` → `register_model`
+> - **Part 2 (from databricks_deployment_v1) — the manual path.** You call `log_model` → `register_model`
 >   → `WorkspaceClient.serving_endpoints` yourself, wire a secret scope, and poll for
 >   `READY`. **This first task deliberately walks you through the internals of
 >   deployment** — every step the platform normally hides (packaging, the serving
 >   container, credential injection, endpoint config, the READY lifecycle) is something
 >   *you* do by hand, so you understand what actually happens when a model goes live.
-> - **Bonus B (from wk5/16) — the `agents.deploy()` path.** Once you've seen the
+> - **Bonus B (from databricks_deployment_v2) — the `agents.deploy()` path.** Once you've seen the
 >   internals, the `databricks-agents` SDK collapses all of that into **one call** that
 >   provisions the endpoint (plus a Review App) and handles auth for you — no secret
 >   scope, no manual endpoint config.
@@ -31,7 +31,7 @@ guide starts from what you already did and points out the handful of things that
 
 ## 1. The mental model you already have
 
-In wk5/15 you ran this exact chain, and PA4 is identical at this level:
+In databricks_deployment_v1 you ran this exact chain, and PA4 is identical at this level:
 
 ```
 your agent file  ──log_model──▶  MLflow (models-from-code)
@@ -48,7 +48,7 @@ Everything you learned still applies:
 - Credentials injected as **secret references** (`{{secrets/cs4603-deploy/...}}`).
 - Test with `openai.OpenAI(base_url=f"{host}/serving-endpoints")`.
 
-If you understood wk5/15, you already understand 80% of PA4 deployment. The rest is
+If you understood databricks_deployment_v1, you already understand 80% of PA4 deployment. The rest is
 the five differences below.
 
 > **Databricks container:**
@@ -65,7 +65,7 @@ the five differences below.
 
 ## 2. PA4 Deployment Add-Ons
 
-| # | wk5/15 | PA4 | Why it changes |
+| # | databricks_deployment_v1 | PA4 | Why it changes |
 |---|--------|-----|----------------|
 | 1 | One self-contained `agent.py` | `agent_model.py` **imports** your `agent/`, `rag/`, `config.py` | Your Part 1 code is modular (8 files); you don't want to copy-paste it all into one file |
 | 2 | `log_model(lc_model=..., name=..., input_example=...)` | same **+ `code_paths=[...]`** | The serving container needs your local packages, so you ship them |
@@ -79,7 +79,7 @@ Each of these is explained with a concrete step below.
 
 ## 3. Difference #1 + #2 — Ship your package with `code_paths`
 
-**This is the single most important change.** In wk5/15 `agent.py` had *everything*
+**This is the single most important change.** In databricks_deployment_v1 `agent.py` had *everything*
 inline, so `log_model` only needed the one file. Your PA4 `agent_model.py` looks like:
 
 ```python
@@ -99,7 +99,7 @@ files. You do that with `code_paths`:
 mlflow.set_registry_uri("databricks-uc")
 with mlflow.start_run():
     model_info = mlflow.langchain.log_model(
-        lc_model="deployment/agent_model.py",     # same idea as wk5/15
+        lc_model="deployment/agent_model.py",     # same idea as databricks_deployment_v1
         name="agent",
         code_paths=[                              # NEW: ship your local packages
             "agent", "rag", "tools", "config.py",
@@ -115,14 +115,14 @@ with mlflow.start_run():
 
 > **If you skip `code_paths`,** the endpoint will fail at startup with
 > `ModuleNotFoundError: No module named 'agent'` in the Serving **Logs** tab. That is
-> the #1 PA4 deployment error — and it never happened in wk5/15 because that agent was
+> the #1 PA4 deployment error — and it never happened in databricks_deployment_v1 because that agent was
 > a single file.
 
 ---
 
 ## 4. Difference #4 — The MCP server travels with your model
 
-In wk5/15 the tools were plain functions defined right in `agent.py`. In PA4 they live
+In databricks_deployment_v1 the tools were plain functions defined right in `agent.py`. In PA4 they live
 in `tools/mcp_server.py` and your graph launches it. For deployment:
 
 - Include `"tools"` in `code_paths` (done above) so the file is in the container.
@@ -147,12 +147,12 @@ tools = load_mcp_tools(_mcp_server)
 
 ---
 
-## 5. Difference #5 — Make the endpoint OpenAI-compatible
+## 5. Difference #5 — Return a non-empty answer on the `messages` channel
 
-wk5/15 used `MessagesState`, so the assistant node automatically put its reply on the
-`messages` channel — and the endpoint returned it as a normal chat completion. Your
+databricks_deployment_v1 used `MessagesState`, so the assistant node automatically put its reply on the
+`messages` channel — and the endpoint returned that state with the answer in it. Your
 PA4 `AnalystState` has extra fields (`plan`, `step_results`, `final_answer`). If your
-**synthesizer** only sets `final_answer`, the endpoint returns an *empty* completion.
+**synthesizer** only sets `final_answer`, the endpoint returns an *empty* answer.
 
 Fix (this is also why Task 1.6 insists on it):
 
@@ -164,6 +164,12 @@ return {"final_answer": answer, "messages": [AIMessage(content=answer)]}
 Rule of thumb: **messages in → messages out.** Keep `messages` (with `add_messages`) as
 the entry and exit channel; the other fields are internal scratch space.
 
+> **Note — this does *not* make the response OpenAI-shaped.** With Path A
+> (`mlflow.langchain.log_model`) the endpoint still returns **raw LangGraph state** as a
+> batch list; appending the `AIMessage` just guarantees that state contains your answer.
+> To get an actual OpenAI `ChatCompletion` object back, use Path B (a `ChatModel`/`ChatAgent`
+> interface) — see §7 Testing.
+
 ---
 
 ## 6. Difference you might *expect* but don't have — the vector store
@@ -173,9 +179,9 @@ container — no code change.
 
 ---
 
-## 7. Everything else is wk5/15, unchanged
+## 7. Everything else is databricks_deployment_v1, unchanged
 
-**Secrets** — identical to wk5/15. Create the scope once, then reference it:
+**Secrets** — identical to databricks_deployment_v1. Create the scope once, then reference it:
 
 ```bash
 databricks secrets create-scope cs4603-deploy
@@ -195,18 +201,36 @@ environment_vars={
 }
 ```
 
-**Testing** — same OpenAI SDK call. One correction: the wk5/15 notebook's last cell
-had a bug (`response[0].messages[-1]`). Use the standard OpenAI shape:
+**Testing** — how you read the response depends on **which model interface you logged**. There are two valid paths, and they return different shapes:
+
+**Path A — `mlflow.langchain.log_model` on your bare graph (matches databricks_deployment_v1).**
+The endpoint serves your graph as a generic model: `predict()` returns **raw LangGraph state**, and Databricks wraps it as a **one-element batch list** — *not* an OpenAI `ChatCompletion`. The OpenAI SDK cannot parse that into a `.choices` object (you'll get `'list' object has no attribute 'choices'`), so call the `/invocations` route directly and read the state:
+
+```python
+import requests
+url = f"{DATABRICKS_HOST}/serving-endpoints/<your-endpoint-name>/invocations"
+resp = requests.post(url, headers={"Authorization": f"Bearer {DATABRICKS_TOKEN}"},
+                     json={"messages": [{"role": "user", "content": "What was the net income in 2023?"}]})
+data = resp.json()
+print(data[0]["messages"][-1]["content"])   # raw state → batch list → last message
+```
+
+This is exactly what `databricks_deployment_v1/streamlit_app.py` does (*"the endpoint returns raw LangGraph state, not OpenAI ChatCompletion format, so we call the REST API directly"*).
+
+**Path B — a chat-native interface: `mlflow.pyfunc.ChatModel` or `ChatAgent` (matches databricks_deployment_v2).**
+Wrapping your graph as a `ChatModel`/`ChatAgent` makes Databricks recognise it as a chat model and return a proper OpenAI `ChatCompletion` object, so the OpenAI SDK works directly:
 
 ```python
 resp = client.chat.completions.create(
     model="<your-endpoint-name>",
     messages=[{"role": "user", "content": "What was the net income in 2023?"}],
 )
-print(resp.choices[0].message.content)   # not response[0].messages[-1]
+print(resp.choices[0].message.content)      # proper OpenAI ChatCompletion
 ```
 
-**Where you run it** — wk5/15 ran the deploy cells in a Databricks notebook. In PA4 you
+Both paths are accepted. Path A is the smaller change from v1; Path B is what our `databricks_deployment_v2/` reference uses and is the cleaner production shape (it also plugs into the AI Playground, evaluation, and Review App out of the box). Whichever you pick, parse the shape it actually returns — don't mix the two.
+
+**Where you run it** — databricks_deployment_v1 ran the deploy cells in a Databricks notebook. In PA4 you
 may either run the same cells in `pa4.ipynb`, or run `deployment/deploy.py`. Both do the
 identical three MLflow/SDK calls.
 
@@ -227,7 +251,7 @@ Before you click deploy, verify — in this order:
 
 ## 9. If the endpoint goes `DEPLOYMENT_FAILED`
 
-Open **Serving → your endpoint → Logs** (same as wk5/15) and match the traceback:
+Open **Serving → your endpoint → Logs** (same as databricks_deployment_v1) and match the traceback:
 
 | Log message | Cause | Fix |
 |-------------|-------|-----|
@@ -235,7 +259,8 @@ Open **Serving → your endpoint → Logs** (same as wk5/15) and match the trace
 | `Missing required environment variables` | secret scope not wired | check `environment_vars` secret refs |
 | `ModuleNotFoundError: 'databricks.vector_search'` | requirement not inferred | add it to `pip_requirements` |
 | endpoint READY but empty answers | synthesizer didn't append `AIMessage` | see §5 |
+| `'list' object has no attribute 'choices'` | parsed a raw-state (Path A) response with the OpenAI `.choices` shape | read `data[0]["messages"][-1]["content"]`, or log as a `ChatModel`/`ChatAgent` (Path B) — see §7 |
 | retrieval errors at inference | VS index/endpoint env vars missing | add `VECTOR_SEARCH_*` to `environment_vars` |
 
-You've done this loop before in wk5/15 — read the traceback, fix the one line, re-log,
+You've done this loop before in databricks_deployment_v1 — read the traceback, fix the one line, re-log,
 re-deploy.

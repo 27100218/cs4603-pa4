@@ -8,11 +8,36 @@ serving contract — see spec Task 1.6).
 
 from __future__ import annotations
 
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+
+from agent.prompts import SYNTHESIZER_PROMPT
 from agent.state import AnalystState
 
 
 def make_synthesizer(llm):
     def synthesizer(state: AnalystState) -> dict:
-        raise NotImplementedError("Task 1.6: implement the synthesizer node")
+        user_query = ""
+        for msg in reversed(state["messages"]):
+            if hasattr(msg, "type") and msg.type == "human":
+                user_query = msg.content
+                break
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                user_query = msg["content"]
+                break
+
+        step_results = state.get("step_results", [])
+        results_text = "\n".join(step_results) if step_results else "No results collected."
+
+        response = llm.invoke([
+            SystemMessage(content=SYNTHESIZER_PROMPT),
+            HumanMessage(content=(
+                f"Original question: {user_query}\n\n"
+                f"Step results:\n{results_text}\n\n"
+                "Write the final answer."
+            )),
+        ])
+
+        answer = response.content.strip()
+        return {"final_answer": answer, "messages": [AIMessage(content=answer)]}
 
     return synthesizer

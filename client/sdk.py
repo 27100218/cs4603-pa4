@@ -12,6 +12,8 @@ TODO: Implement `DocumentAnalystClient` and `AnalystClientError` per Task 3.1:
 
 from __future__ import annotations
 
+import os
+import time
 from collections.abc import Iterator
 
 
@@ -31,13 +33,84 @@ class DocumentAnalystClient:
         timeout: float = 120.0,
         max_retries: int = 3,
     ) -> None:
-        raise NotImplementedError("Task 3.1: implement the client constructor")
+        self._endpoint = endpoint_name
+        self._host = (host or os.environ.get("DATABRICKS_HOST", "")).rstrip("/")
+        self._token = token or os.environ.get("DATABRICKS_TOKEN", "")
+        self._timeout = timeout
+        self._max_retries = max_retries
 
-    def ask(self, question: str) -> str:
-        raise NotImplementedError("Task 3.1: implement ask()")
+        if not self._host or not self._token:
+            raise ValueError(
+                "DATABRICKS_HOST and DATABRICKS_TOKEN must be provided or set in environment."
+            )
 
-    def ask_streaming(self, question: str) -> Iterator[str]:
-        raise NotImplementedError("Task 3.1: implement ask_streaming()")
+    def _client(self):
+        import openai
+        return openai.OpenAI(
+            api_key=self._token,
+            base_url=f"{self._host}/serving-endpoints",
+            timeout=self._timeout,
+            max_retries=0,
+        )
 
     def health_check(self) -> bool:
-        raise NotImplementedError("Task 3.1: implement health_check()")
+        from databricks.sdk import WorkspaceClient
+        w = WorkspaceClient(host=self._host, token=self._token)
+        try:
+            ep = w.serving_endpoints.get(self._endpoint)
+            ready = getattr(ep.state, "ready", None)
+            # The SDK may return an enum (ServingEndpointStateReady.READY) or a
+            # plain string.  Use .value if present, else fall back to str().
+            ready_str = getattr(ready, "value", str(ready)).upper()
+            return ready_str == "READY"
+        except Exception:
+            return False
+
+    def ask(self, question: str) -> str:
+        import openai
+        client = self._client()
+        last_exc: Exception | None = None
+
+        for attempt in range(self._max_retries):
+            try:
+                resp = client.chat.completions.create(
+                    model=self._endpoint,
+                    messages=[{"role": "user", "content": question}],
+                )
+                return resp.choices[0].message.content or ""
+            except openai.RateLimitError as exc:
+                last_exc = exc
+                time.sleep(2 ** attempt)
+            except openai.APIStatusError as exc:
+                if exc.status_code == 503:
+                    last_exc = exc
+                    time.sleep(2 ** attempt)
+                else:
+                    raise AnalystClientError(
+                        str(exc.message), exc.status_code, exc.request_id or ""
+                    ) from exc
+            except openai.APITimeoutError as exc:
+                raise TimeoutError(f"Request timed out after {self._timeout}s") from exc
+
+        raise last_exc  # type: ignore[misc]
+
+    def ask_streaming(self, question: str) -> Iterator[str]:
+        import openai
+        client = self._client()
+
+        # LangGraph runs to completion before returning, so the endpoint cannot
+        # emit token-by-token chunks.  Use a blocking call and yield the full
+        # content so callers can use the iterator interface unchanged.
+        try:
+            resp = client.chat.completions.create(
+                model=self._endpoint,
+                messages=[{"role": "user", "content": question}],
+            )
+            content = resp.choices[0].message.content or ""
+            yield content
+        except openai.APITimeoutError as exc:
+            raise TimeoutError(f"Stream timed out after {self._timeout}s") from exc
+        except openai.APIStatusError as exc:
+            raise AnalystClientError(
+                str(exc.message), exc.status_code, exc.request_id or ""
+            ) from exc

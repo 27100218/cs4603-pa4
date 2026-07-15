@@ -9,6 +9,8 @@
 
 This assignment takes you from a locally-running LangGraph agent to a **production-deployed service** on Databricks. You will build a multi-agent Document Analyst system, deploy it as a Model Serving endpoint, and write a client SDK to invoke it programmatically.
 
+> **Where you write up your work:** this `README.md` is the assignment spec. Record your setup steps, results, and answers to the analysis questions in **[`STUDENT_ANALYSIS.md`](STUDENT_ANALYSIS.md)** — that is the file you submit.
+
 The core engineering decisions you will explore:
 
 1. **Graph architecture:** How to decompose a complex task into cooperating agents with typed state, conditional routing, and tool integration.
@@ -152,16 +154,16 @@ graph TD
 
 You should already be comfortable with:
 
-- LangGraph: state schemas, nodes, conditional edges, tool nodes, subgraphs (wk5 notebooks 1–14)
+- LangGraph: state schemas, nodes, conditional edges, tool nodes, subgraphs (wk5 notebooks 1-11)
 - RAG on Databricks: `ai_prep_search` chunking, managed embeddings, **Vector Search** retrieval (PA2 Part 1)
 - MLflow: experiment logging, model registration (PA1–PA3)
-- Databricks Model Serving and Unity Catalog (wk5 notebook 15)
+- Databricks Model Serving and Unity Catalog (databricks_deployment_v1)
 
 > **Everything runs on Databricks.** PA4 uses **Databricks Vector Search** end-to-end — the same managed index works locally *and* inside the deployed serving container, so there is no local-vs-cloud retrieval gap to bridge.
 
 Course repository: https://github.com/alikhawaja/cs4603
 
-Use `wk5_langgraph/15.databricks_deployment/` as the primary reference for deployment patterns.
+Use `databricks_deployment_v1/` as the primary reference for deployment patterns.
 
 ---
 
@@ -188,8 +190,11 @@ PA-4/
 ├── .env.example                    # [GIVEN]
 ├── pyproject.toml                  # [GIVEN]
 ├── config.py                       # [GIVEN] — env loading + LLM client factory
-├── README.md                       # [STUDENT]
-├── pa4.ipynb                       # [STUDENT] — development & testing notebook
+├── README.md                       # [GIVEN] — the assignment spec (this file)
+├── DEPLOYMENT_GUIDE.md             # [GIVEN] — step-by-step deployment walkthrough
+├── GITHUB_PIPELINE.md              # [GIVEN] — CI/CD background for Bonus A
+├── STUDENT_ANALYSIS.md            # [STUDENT] — your submission write-up
+├── pa4.ipynb                       # [GIVEN skeleton → STUDENT fills in] — development & testing notebook
 │
 ├── data/
 │   ├── annual_report.pdf           # [GIVEN] — the corpus to ingest (Meridian Motor Corp, fictional)
@@ -207,13 +212,16 @@ PA-4/
 │   └── prompts.py                  # [STUDENT] — all system prompts
 │
 ├── rag/
+│   ├── __init__.py                 # [STUDENT]
 │   ├── ingest.py                   # [STUDENT] — parse + chunk into a Delta table
 │   └── store.py                    # [STUDENT] — Vector Search index + retriever
 │
 ├── tools/
+│   ├── __init__.py                # [GIVEN]
 │   └── mcp_server.py              # [GIVEN] — MCP server with math/finance tools
 │
 ├── deployment/
+│   ├── __init__.py                # [STUDENT]
 │   ├── agent_model.py             # [STUDENT] — MLflow models-from-code definition
 │   ├── deploy.py                  # [STUDENT] — deployment script
 │   ├── deploy_agents.py           # [STUDENT] — (Bonus B) databricks-agents deployment
@@ -226,7 +234,7 @@ PA-4/
 │   └── sdk.py                     # [STUDENT] — client SDK
 │
 ├── tests/
-│   └── test_smoke.py             # [STUDENT] — offline graph smoke test (Bonus A target)
+│   └── test_smoke.py             # [STUDENT] — offline graph smoke test (required; automated in Bonus A)
 │
 └── .github/
     └── workflows/
@@ -289,7 +297,7 @@ You are provided a financial document — `data/annual_report.pdf`, the FY2023 a
 3. Create a **STANDARD** Vector Search endpoint and a **Delta Sync index** with managed embeddings (`pipeline_type="TRIGGERED"`, `primary_key="chunk_id"`, `embedding_source_column="chunk_to_retrieve"`, `embedding_model_endpoint_name=$EMBEDDINGS_ENDPOINT`).
 4. Verify the index reaches `READY` and answers a similarity-search test query.
 
-**Reference:** PA2 Part 1 (Vector Search walkthrough) and `wk5_langgraph/8.langgraph_rag/` for the LangGraph + retriever wiring pattern (adapt its pgvector retriever to `DatabricksVectorSearch`).
+**Reference:** PA2 Part 1 (Vector Search walkthrough) and `wk5_langgraph/11b.langgraph_rag.ipynb` for the LangGraph + retriever wiring pattern (adapt its pgvector retriever to `DatabricksVectorSearch`).
 
 > This is the only vector store in PA4. Because the index lives in Databricks, the exact same retriever code runs locally and inside your deployed endpoint (Part 2) — no separate embedding path for deployment.
 
@@ -343,7 +351,7 @@ Define a `TypedDict` state that tracks:
 
 **File:** `agent/planner.py`
 
-**Reference:** `wk5_langgraph/11.plan_and_execute.ipynb`
+**Reference:** `wk6_agent_design/2.plan_and_execute.ipynb`
 
 #### IMPLEMENTATION
 
@@ -365,7 +373,7 @@ The planner receives the user query and produces a list of 2–5 atomic steps.
 
 **File:** `agent/supervisor.py`
 
-**Reference:** `wk5_langgraph/10.multi_agent.ipynb`
+**Reference:** `wk6_agent_design/1.multi_agent.ipynb`
 
 #### IMPLEMENTATION
 
@@ -389,7 +397,7 @@ Implement the conditional edge function that maps the supervisor's `next_agent` 
 
 **File:** `agent/rag_agent.py`
 
-**Reference:** PA2 Part 1 (Vector Search + `DatabricksVectorSearch`) and `wk5_langgraph/8.langgraph_rag/`
+**Reference:** PA2 Part 1 (Vector Search + `DatabricksVectorSearch`) and `wk5_langgraph/11b.langgraph_rag.ipynb`
 
 #### IMPLEMENTATION
 
@@ -414,7 +422,7 @@ Reuse your `rag/store.py` retriever factory so the identical code path serves bo
 
 **File:** `agent/graph.py` (MCP integration)
 
-**Reference:** `wk4_langchain_agents_mcp/` for MCP client patterns
+**Reference:** `wk4_agents_mcp/` for MCP client patterns
 
 #### IMPLEMENTATION
 
@@ -444,6 +452,8 @@ Connect the provided MCP server as a tool node in your graph:
 
 **File:** `agent/synthesizer.py`
 
+**Reference:** No new pattern — this is a standard LLM synthesis call over the collected context, like the answer-generation step in `wk5_langgraph/11b.langgraph_rag.ipynb` (and PA2's RAG chain).
+
 #### IMPLEMENTATION
 
 The synthesizer receives all step results and produces a coherent final answer:
@@ -453,15 +463,17 @@ The synthesizer receives all step results and produces a coherent final answer:
 - Handle partial failures (some steps returned "not found")
 - Write the final answer to **both** `final_answer` **and** the `messages` channel as an `AIMessage`
 
-> **Why append to `messages`?** Your deployed endpoint (Part 2) exposes an OpenAI-compatible chat API. MLflow serves the graph with a *messages-in → messages-out* contract: the request arrives as `{"messages": [...]}` and the response is read from the **last message** in the returned state. If the synthesizer only sets `final_answer` and never appends an `AIMessage`, the endpoint will return an empty completion even though your local state looks correct. Keep `messages` (with the `add_messages` reducer) as the entry and exit channel; the extra fields (`plan`, `step_results`, …) are internal scratch space.
+> **Why append to `messages`?** Your deployed endpoint (Part 2) is served with a *messages-in → messages-out* contract: the request arrives as `{"messages": [...]}` and the answer is read from the **last message** in the returned state. If the synthesizer only sets `final_answer` and never appends an `AIMessage`, the endpoint will return an empty answer even though your local state looks correct. Keep `messages` (with the `add_messages` reducer) as the entry and exit channel; the extra fields (`plan`, `step_results`, …) are internal scratch space. (Whether that state comes back as raw JSON or a proper OpenAI `ChatCompletion` depends on your model interface — see Task 2.4.)
 
 ---
 
-### Task 1.7: Wire the Full Graph [required — up to 5 make-up pts within Part 1's 40]
+### Task 1.7: Wire the Full Graph [required]
 
 **File:** `agent/graph.py`
 
-**Reference:** `wk5_langgraph/12.subgraphs.ipynb` for composition patterns
+> **Points note:** this task has no points of its own — Tasks 1.1–1.6 already sum to Part 1's 40. A working end-to-end graph is **required** for Part 1 to be assessed; doing it well can recover up to 5 points lost on earlier Part 1 tasks.
+
+**Reference:** `wk5_langgraph/9.subgraphs.ipynb` for composition patterns
 
 
 #### IMPLEMENTATION
@@ -494,17 +506,25 @@ graph = builder.compile()
 4. Test with a combined query (e.g., "What was the revenue in 2023, and what would a 10% increase look like?")
 5. Show the step-by-step execution trace for the combined query
 
+**Required — offline smoke test.** Add `tests/test_smoke.py` that builds the graph and runs one query with a **mocked LLM** (no Databricks calls), asserting the graph compiles and returns a non-empty `messages` result. Run it with `python -m pytest tests/test_smoke.py`. This gives you a fast local feedback loop that never touches serving quota — and it's the same test Bonus A automates in CI.
+
 ---
 
 ## PART 2: Databricks Deployment [40 Points]
 
 **Goal:** Package your Document Analyst as an MLflow model and deploy it to a Databricks Model Serving endpoint.
 
-**Reference:** `wk5_langgraph/15.databricks_deployment/` — study `agent.py`, `deploy_setup.py`, and `deployment.ipynb` thoroughly before starting.
+**Reference:** `databricks_deployment_v1/` — study `agent.py` and `deployment.ipynb` thoroughly before starting.
+
+> **Model interface — two accepted approaches.** The simplest is `mlflow.langchain.log_model` on your bare graph (v1 style); its endpoint returns **raw LangGraph state** (see Task 2.4 for how to read it). Alternatively you may wrap the graph as a `mlflow.pyfunc.ChatModel` / `ChatAgent` (v2 style, see `databricks_deployment_v2/`), which returns a standard OpenAI `ChatCompletion` and plugs into the AI Playground / evaluation / Review App. Both are fine for PA4 — just parse whichever response shape you produce.
 
 > **See [`DEPLOYMENT_GUIDE.md`](DEPLOYMENT_GUIDE.md) for complete details** on the manual
 > deployment path — the mental model, the five PA4-specific differences, the serving
 > container internals, secret scopes, and the READY lifecycle.
+>
+> Hitting errors? Jump to the **[Deployment Troubleshooting](#appendix-deployment-troubleshooting)** appendix.
+
+> **Cost & cleanup (student workspaces).** Serving and Vector Search endpoints consume quota. Set `scale_to_zero_enabled=True` (Task 2.3), expect **several minutes** for an endpoint to first reach `READY`, and **delete your endpoint** with `databricks serving-endpoints delete <name>` once you've captured the outputs for your submission.
 
 ---
 
@@ -512,7 +532,7 @@ graph = builder.compile()
 
 **File:** `deployment/agent_model.py`
 
-**Reference:** `wk5_langgraph/15.databricks_deployment/agent.py`
+**Reference:** `databricks_deployment_v1/agent.py`
 
 #### IMPLEMENTATION
 
@@ -537,7 +557,7 @@ Create a self-contained model file that MLflow can serialize via models-from-cod
 
 **File:** `deployment/deploy.py`
 
-**Reference:** `wk5_langgraph/15.databricks_deployment/deploy_setup.py`
+**Reference:** `databricks_deployment_v1/deployment.ipynb`
 
 #### IMPLEMENTATION
 
@@ -578,6 +598,8 @@ registered = mlflow.register_model(model_info.model_uri, f"{catalog}.{schema}.{m
 ### Task 2.3: Create the Serving Endpoint [10 pts]
 
 **File:** `deployment/deploy.py` (continued)
+
+**Reference:** `databricks_deployment_v1/deployment.ipynb` — the endpoint-creation cells (`WorkspaceClient`, `EndpointCoreConfigInput`, `ServedEntityInput`).
 
 #### IMPLEMENTATION
 
@@ -627,26 +649,34 @@ databricks serving-endpoints get <your-endpoint-name>
 
 ### Task 2.4: Test the Deployed Endpoint [10 pts]
 
+**Reference:** `databricks_deployment_v1/streamlit_app.py` and `deployment.ipynb` show how the deployed endpoint is invoked and its response parsed.
+
 **Notebook work (pa4.ipynb):**
 
 1. Call the endpoint using `curl` and show the raw response
-2. Call the endpoint using the OpenAI Python SDK and show the parsed response
+2. Call the endpoint and show the parsed answer — **the response shape depends on how you logged the model** (see the note below)
 3. Run the same 3 test queries from Task 1.7 against the deployed endpoint
 4. Compare local vs. deployed responses — are they identical? If not, explain why
 5. Measure and report: latency per request (cold start vs. warm)
 
+> **Two valid response shapes.** If you logged with `mlflow.langchain.log_model` (like `databricks_deployment_v1`), the endpoint returns **raw LangGraph state as a batch list** — parse it as `data[0]["messages"][-1]["content"]` via a direct `requests.post` to `/invocations`. The OpenAI SDK's `resp.choices[0]...` will raise `'list' object has no attribute 'choices'` on this path. If instead you wrapped your graph as a `mlflow.pyfunc.ChatModel` / `ChatAgent` (like `databricks_deployment_v2`), you get a proper OpenAI `ChatCompletion` and `resp.choices[0].message.content` works. Either is accepted — just parse the shape you actually return. See `DEPLOYMENT_GUIDE.md` §7 for both code snippets.
+
 ```python
+# Path A — raw LangGraph state (mlflow.langchain.log_model, matches v1):
+import requests
+url = f"{DATABRICKS_HOST}/serving-endpoints/<your-endpoint-name>/invocations"
+r = requests.post(url, headers={"Authorization": f"Bearer {DATABRICKS_TOKEN}"},
+                  json={"messages": [{"role": "user", "content": "What was the net income in 2023?"}]})
+print(r.json()[0]["messages"][-1]["content"])
+
+# Path B — OpenAI ChatCompletion (mlflow.pyfunc.ChatModel / ChatAgent, matches v2):
 import openai
-
-client = openai.OpenAI(
-    api_key=DATABRICKS_TOKEN,
-    base_url=f"{DATABRICKS_HOST}/serving-endpoints",
-)
-
-response = client.chat.completions.create(
+client = openai.OpenAI(api_key=DATABRICKS_TOKEN, base_url=f"{DATABRICKS_HOST}/serving-endpoints")
+resp = client.chat.completions.create(
     model="<your-endpoint-name>",
     messages=[{"role": "user", "content": "What was the net income in 2023?"}],
 )
+print(resp.choices[0].message.content)
 ```
 
 ---
@@ -660,6 +690,8 @@ response = client.chat.completions.create(
 ### Task 3.1: Client Class [12 pts]
 
 **File:** `client/sdk.py`
+
+**Reference:** `databricks_deployment_v1/streamlit_app.py` for endpoint-invocation + auth; `databricks_deployment_v2/agent_chat.py` for the `agents.deploy()` client style.
 
 #### IMPLEMENTATION
 
@@ -759,7 +791,7 @@ Create a GitHub Actions workflow that:
 
 **File:** `deployment/deploy_agents.py`
 
-**Reference:** `wk5_langgraph/16.databricks_deployment_v2/` — study `agent_chat.py` and `deployment_v2.ipynb`, which deploy the same agent via `agents.deploy()` with automatic authentication (no secret scope). This is the v2 counterpart to the `15.databricks_deployment/` reference used in Part 2.
+**Reference:** `databricks_deployment_v2/` — study `agent_chat.py` and `deployment_v2.ipynb`, which deploy the same agent via `agents.deploy()` with automatic authentication (no secret scope). This is the v2 counterpart to the `databricks_deployment_v1/` reference used in Part 2.
 
 > **See [`DEPLOYMENT_GUIDE.md`](DEPLOYMENT_GUIDE.md) for complete details.** The
 > `agents.deploy()` path reuses the entire manual pipeline unchanged — you only swap the
@@ -825,7 +857,7 @@ service from the model that calls it.
 
 **Files:** `deployment/mcp_app/app.py`, `deployment/mcp_app/app.yaml`
 
-**Reference:** `wk4_langchain_agents_mcp/` for MCP transports, and the Databricks Apps
+**Reference:** `wk4_agents_mcp/` for MCP transports, and the Databricks Apps
 documentation for hosting a custom web service.
 
 ---
@@ -918,17 +950,38 @@ Bonus C:   agent  ──HTTPS + bearer────▶  MCP server        (separa
 
 ## Grading Rubric
 
-| Component | Points |
-|-----------|--------|
-| Part 1: Document Analyst (LangGraph multi-agent) | 40 |
-| Part 2: Databricks Deployment (MLflow models-from-code) | 40 |
-| Part 3: Python Client SDK | 20 |
-| Bonus A: GitHub Actions CI/CD | 15 |
-| Bonus B: `databricks-agents` SDK | 15 |
-| Bonus C: Standalone MCP server on Databricks | 15 |
-| **Total** | **100 + 45 bonus** |
+Point allocations are in the [Points](#points) table above. Beyond raw functionality:
 
-**Note:** Written analysis responses account for approximately 25% of total points. Code that runs but is not understood will not receive full marks.
+- **Written analysis** accounts for approximately **10%** of total points — answer every question in `STUDENT_ANALYSIS.md`.
+- **Reproducibility:** code that runs but isn't explained, or results a TA can't reproduce from your `STUDENT_ANALYSIS.md`, won't receive full marks.
+- **Deployment proof:** Parts 2–3 require evidence the endpoint actually responded (curl / SDK output), not just code.
+
+---
+
+## Definition of Done
+
+Before you submit, confirm each item — this is the same checklist a TA uses:
+
+**Part 1 — Document Analyst**
+- [ ] `python -m pytest tests/test_smoke.py` passes (offline, mocked LLM)
+- [ ] Combined query shows a full trace: planner → supervisor → RAG → MCP → synthesizer
+- [ ] Final answer is written to the `messages` channel (not only `final_answer`)
+
+**Part 2 — Deployment**
+- [ ] `python -c "import deployment.agent_model"` succeeds with no missing-env error
+- [ ] Endpoint reaches `READY`; `databricks serving-endpoints get <name>` confirms it
+- [ ] `curl` to the endpoint returns HTTP 200 with a **non-empty** completion
+- [ ] Secrets are passed as `{{secrets/...}}` references (no plaintext tokens in code)
+
+**Part 3 — Client SDK**
+- [ ] `health_check()` returns `True` against the live endpoint
+- [ ] `ask()` returns a cited answer; timeout and retry paths are demonstrated
+
+**Submission hygiene**
+- [ ] All ANALYSIS QUESTIONS answered in `STUDENT_ANALYSIS.md`
+- [ ] `pa4.ipynb` included with **all outputs visible**
+- [ ] No `.env`, virtualenvs, or large model files in the zip
+- [ ] Endpoint deleted after capturing outputs (see the cost note in Part 2)
 
 ---
 
@@ -938,10 +991,28 @@ Submit a single zip file containing:
 
 - All source code in the prescribed directory structure
 - Your completed `pa4.ipynb` with ALL OUTPUTS VISIBLE
-- Your `README.md` with all analysis questions answered
+- Your completed `STUDENT_ANALYSIS.md` write-up with all analysis questions answered
 - Do not include `.env`, virtual environment directories, or large binary/model files
 
 Name your submission: `<roll_number>_pa4.zip`
+
+---
+
+## Appendix: Deployment Troubleshooting
+
+Most Part 2/3 time is lost to a handful of failure modes. Check here first.
+
+| Symptom | Likely cause | Fix |
+|---------|--------------|-----|
+| Endpoint status `DEPLOYMENT_FAILED` right after creation | A required env var is missing, so `deployment/agent_model.py` raises at import time | Validate env vars at import (Task 2.1) so serving logs name the missing var; confirm every var from Task 2.3 is set |
+| Endpoint stuck in `NOT_READY` for a long time | First-time container build + model load, or the Vector Search endpoint/index isn't `READY` yet | Wait several minutes; verify the VS index from Task 0.3 is `READY` before serving |
+| Endpoint returns HTTP 200 but an **empty** completion | Synthesizer set `final_answer` but never appended an `AIMessage` to `messages` | Write the answer to the `messages` channel too (Task 1.6) — MLflow reads the last message |
+| `'list' object has no attribute 'choices'` from the OpenAI SDK | You logged with `mlflow.langchain.log_model` (raw-state path) but parsed with `resp.choices[...]` | Either read raw state via `requests` as `data[0]["messages"][-1]["content"]`, or log as a `ChatModel`/`ChatAgent` to get an OpenAI object (Task 2.4) |
+| `401 Unauthorized` from the container | `DATABRICKS_TOKEN` / `DATABRICKS_HOST` not passed, or a secret-scope reference is wrong | Store them in a secret scope and reference as `{{secrets/scope/key}}` (Task 2.3) |
+| `rag/store.py` raises at container startup | `VECTOR_SEARCH_ENDPOINT` / `VECTOR_SEARCH_INDEX` / `EMBEDDINGS_ENDPOINT` not set on the endpoint | Add them to `environment_vars` (plaintext is fine — not secrets) |
+| Works locally, fails when deployed | You referenced local-only state (a laptop DB, a local file path) | Everything must be reachable from the container: use the managed VS index and env-based config (Task 2.1) |
+
+> **See [`DEPLOYMENT_GUIDE.md`](DEPLOYMENT_GUIDE.md)** for the full mental model behind these.
 
 ---
 
@@ -950,18 +1021,18 @@ Name your submission: `<roll_number>_pa4.zip`
 | Topic | Course Material |
 |-------|----------------|
 | State schemas & reducers | `wk5_langgraph/3a.annotations.ipynb`, `3b.reducers.ipynb` |
-| Tool calling in LangGraph | `wk5_langgraph/4.tool_calling.ipynb` |
+| Tool calling in LangGraph | `wk5_langgraph/4b.agent_with_tools.ipynb` |
 | Router / conditional edges | `wk5_langgraph/5.router.ipynb` |
-| ReAct agent | `wk5_langgraph/6.agent.ipynb` |
+| ReAct agent | `wk5_langgraph/4a.agent.ipynb` |
 | Agent memory & persistence | `wk5_langgraph/7.agent-memory.ipynb` |
-| LangGraph + RAG | `wk5_langgraph/8.langgraph_rag/` (adapt retriever to Vector Search) |
-| Human-in-the-loop | `wk5_langgraph/9.human_in_the_loop.ipynb` |
-| Multi-agent patterns | `wk5_langgraph/10.multi_agent.ipynb` |
-| Plan-and-execute | `wk5_langgraph/11.plan_and_execute.ipynb` |
-| Subgraphs | `wk5_langgraph/12.subgraphs.ipynb` |
-| Streaming | `wk5_langgraph/13.streaming.ipynb` |
-| Deployment pipeline | `wk5_langgraph/15.databricks_deployment/` |
-| Agent Framework deployment (`agents.deploy()`) | `wk5_langgraph/16.databricks_deployment_v2/` |
-| MCP tool integration | `wk4_langchain_agents_mcp/` |
-| Standalone MCP server on Databricks (Bonus C) | `wk4_langchain_agents_mcp/` (MCP transports) + Databricks Apps docs |
+| LangGraph + RAG | `wk5_langgraph/11b.langgraph_rag.ipynb` (adapt retriever to Vector Search) |
+| Human-in-the-loop | `wk5_langgraph/8.human_in_the_loop.ipynb` |
+| Multi-agent patterns | `wk6_agent_design/1.multi_agent.ipynb` |
+| Plan-and-execute | `wk6_agent_design/2.plan_and_execute.ipynb` |
+| Subgraphs | `wk5_langgraph/9.subgraphs.ipynb` |
+| Streaming | `wk5_langgraph/10.streaming.ipynb` |
+| Deployment pipeline | `databricks_deployment_v1/` |
+| Agent Framework deployment (`agents.deploy()`) | `databricks_deployment_v2/` |
+| MCP tool integration | `wk4_agents_mcp/` |
+| Standalone MCP server on Databricks (Bonus C) | `wk4_agents_mcp/` (MCP transports) + Databricks Apps docs |
 | RAG ingestion & Vector Search retrieval | PA2 Part 1 (Databricks Vector Search) |
