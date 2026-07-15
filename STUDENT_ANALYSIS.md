@@ -18,6 +18,74 @@ cp .env.example .env   # then fill in your values
 `.env` values used for this submission (redacted): `DATABRICKS_HOST`, `DATABRICKS_TOKEN`, `DATABRICKS_MODEL`,
 `UC_CATALOG=cs4603`, `UC_SCHEMA=default`, `SECRET_SCOPE=cs4603-deploy`, `SERVING_ENDPOINT_NAME=yahya-document-analyst`.
 
+## Ingestion (Task 0.3)
+
+Run once, in a Databricks notebook (`pa4 ingest`; needs Spark + `ai_parse_document`/
+`ai_prep_search`, not available locally):
+
+**1. Parse the PDF** — `ai_parse_document` over every PDF in the UC volume:
+```sql
+CREATE TABLE IF NOT EXISTS cs4603.default.yahya_analyst_parsed (
+    path STRING, parsed VARIANT
+) TBLPROPERTIES (delta.enableChangeDataFeed = true);
+
+INSERT OVERWRITE cs4603.default.yahya_analyst_parsed
+SELECT path, ai_parse_document(content) AS parsed
+FROM READ_FILES('/Volumes/cs4603/default/pa4/', format => 'binaryFile')
+WHERE path LIKE '%.pdf';
+```
+Output: `Parsed.`
+
+**2. Chunk it** — `ai_prep_search` into the chunks table read by the retriever:
+```sql
+CREATE TABLE IF NOT EXISTS cs4603.default.yahya_analyst_chunks (
+    chunk_id STRING, chunk_to_retrieve STRING, chunk_to_embed STRING, source STRING
+) TBLPROPERTIES (delta.enableChangeDataFeed = true);
+
+INSERT OVERWRITE cs4603.default.yahya_analyst_chunks
+SELECT chunk.value:chunk_id::STRING, chunk.value:chunk_to_retrieve::STRING,
+       chunk.value:chunk_to_embed::STRING, path AS source
+FROM (SELECT path, ai_prep_search(parsed) AS result FROM cs4603.default.yahya_analyst_parsed) prepped,
+LATERAL variant_explode(result:document.contents) AS chunk;
+```
+Output: `Created 7 chunks`
+
+**3. Create the Vector Search index** — `STANDARD` endpoint, `TRIGGERED` Delta Sync index:
+```python
+from databricks.vector_search.client import VectorSearchClient
+vsc = VectorSearchClient()
+vsc.create_delta_sync_index(
+    endpoint_name="cs4603_rag_endpoint",
+    index_name="cs4603.default.yahya_analyst_index",
+    source_table_name="cs4603.default.yahya_analyst_chunks",
+    pipeline_type="TRIGGERED",
+    primary_key="chunk_id",
+    embedding_source_column="chunk_to_retrieve",
+    embedding_model_endpoint_name="databricks-gte-large-en",
+)
+```
+Output: `Index created`
+
+**4. Verify `READY` and test retrieval:**
+```python
+index = vsc.get_index("cs4603_rag_endpoint", "cs4603.default.yahya_analyst_index")
+print(index.describe()["status"]["detailed_state"])
+```
+Output: `ONLINE_NO_PENDING_UPDATE` — `Index creation succeeded.`
+
+```python
+index.similarity_search(query_text="What was the net revenue in 2023?",
+                         columns=["chunk_to_retrieve", "source"], num_results=3)
+```
+Returned real chunks from `annual_report.pdf` containing the relevant revenue/region breakdown
+text (e.g. "...Asia (excluding Japan) was the fastest-growing major region on an absolute basis,
+adding ¥610 billion of net revenue year over year...").
+
+`rag/store.py`'s retriever factory (`get_retriever()`) is the single code path used both locally
+and inside the deployed endpoint — confirmed by the same source citations
+(`dbfs:/Volumes/cs4603/default/pa4/annual_report.pdf`) showing up identically in the local graph
+runs, the deployed endpoint responses, and the Review App feedback throughout this document.
+
 ## Running locally
 
 The corpus (`data/annual_report.pdf`) was ingested once from a Databricks notebook into the
@@ -26,12 +94,30 @@ was built and exercised in `pa4.ipynb` (Part 1, Task 1.7 cells) with three test 
 
 | Query | Answer produced |
 |-------|-----------------|
-| "What was the net income in 2023?" | ¥1,107 billion, source: annual_report.pdf |
-| "What is 15% of 2.4 billion?" | 360,000,000 (3.6e8) |
-| "What was the net revenue in 2023, and what would it be after 10% growth for 3 years?" | ¥16,910 billion → ¥22,507.21 billion (16,910 × 1.1³) |
+| "What was the net income in 2023?" | ¥1,107 billion (Source: annual_report.pdf, page 2) |
+| "What is 15% of 2.4 billion?" | 3.6e+08 (360 million) |
+| "What was the net revenue in 2023, and what would it be after 10% growth for 3 years?" | ¥16,910 billion → ~¥22,516 billion |
 
 See `pa4.ipynb` cells under "Task 1.7 — Wire the Full Graph" for full outputs and the
 step-by-step execution trace for the combined query.
+
+**Bug found in the combined query's execution trace.** The planner produced step 3 as the literal
+string `"Calculate compound growth: net revenue * (1.10)^3"`, and the MCP node passed that whole
+phrase to the `calculate` tool instead of substituting the actual retrieved number. The safe AST
+evaluator correctly rejected it: `Error evaluating 'net revenue * (1.10)^3': invalid syntax`. The
+synthesizer recovered by reasoning through the compound-growth formula manually from the other two
+step results, but its own arithmetic was also slightly off: it reported
+¥16,910 billion × 1.331 = ¥22,515.91 billion, when the correct product is ¥22,507.21 billion. So
+this single query surfaced two independent problems in one run: (1) the MCP node doesn't
+substitute retrieved values into a calculation step's expression before invoking the tool, so any
+step template containing a natural-language quantity name instead of a number fails at the tool
+level; (2) the synthesizer's own fallback arithmetic (used when a step result is a "Error
+evaluating..." string) is not reliably correct either, since it's just LLM token generation, not a
+real calculation. A fix for (1) would be to have the MCP node's system prompt (or a pre-processing
+step) resolve step text against prior `step_results` before handing it to the LLM for tool-calling,
+so `"net revenue"` is replaced with `16910` before the tool ever sees the expression. This is a more
+concrete, reproducible version of the general misroute/failure-mode discussion in the Task 1.3
+supervisor answer below.
 
 ## Deployment
 
@@ -43,6 +129,19 @@ step-by-step execution trace for the combined query.
   `cs4603-deploy` secret scope.
 - Verified live via curl and the OpenAI SDK (`pa4.ipynb`, Task 2.4 cells) — both returned correct,
   sourced answers, e.g. "The net income in 2023 was ¥1,107 billion... (Source: dbfs:/Volumes/cs4603/default/pa4/annual_report.pdf)."
+
+**Part 3 (Python Client SDK, `client/sdk.py`, `pa4.ipynb` Task 3.2 cells):**
+- `health_check()` against the live endpoint: `Endpoint healthy: True`.
+- `ask("What was the net income in 2023?")`: "The net income in 2023 was ¥1,107 billion, as
+  reported in the annual report (source: dbfs:/Volumes/cs4603/default/pa4/annual_report.pdf)."
+- `ask_streaming("What was the total revenue in 2023?")`: streamed "The total revenue in 2023
+  was ¥16,910 billion (or ¥16.91 trillion), as stated in the annual report (page 2) [1]." token
+  by token.
+- Timeout simulation (`DocumentAnalystClient(timeout=0.001)`): raised and caught
+  `TimeoutError: Request timed out after 0.001s` as expected.
+- Retry simulation (`DocumentAnalystClient(endpoint_name="nonexistent-endpoint-xyz", max_retries=2)`):
+  retried, then raised `AnalystClientError: Error code: 404 - {'error_code': 'ENDPOINT_NOT_FOUND', ...}`
+  as expected.
 
 **Bonus B (`agents.deploy()`, `deployment/deploy_agents.py`):**
 - Registered a second run of the same model to the same UC name, deployed with `agents.deploy()`
